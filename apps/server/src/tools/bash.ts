@@ -3,6 +3,14 @@ import type { ToolDefinition } from "@tinyclaw/core";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 32_000;
+const MAX_COMMAND_CHARS = 8_000;
+
+/** Patterns that indicate attempts to bypass single-command execution. */
+const REJECT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /[\n\r]/, reason: "Multi-line commands are not allowed." },
+  { pattern: /\/dev\/tcp\//, reason: "Network redirect via /dev/tcp is not allowed." },
+  { pattern: /\/dev\/udp\//, reason: "Network redirect via /dev/udp is not allowed." },
+];
 
 export interface BashInput {
   command: string;
@@ -20,12 +28,19 @@ export interface BashOutput {
 export const bashTool: ToolDefinition<BashInput, BashOutput> = {
   name: "bash",
   description:
-    "Run a one-off shell command and return stdout, stderr, and exit code. Do not use this to create persistent tools, tool files, shell wrappers, or .sh scripts. If the user wants a reusable tool, translate shell examples into JavaScript instead.",
+    "Run a one-off shell command within the allowed workspace. Returns stdout, stderr, and exit code. Do not use this to create persistent tools, tool files, shell wrappers, or .sh scripts. If the user wants a reusable tool, translate shell examples into JavaScript instead.",
   parameters: {
     type: "object",
     properties: {
-      command: { type: "string", description: "Shell command to run." },
-      cwd: { type: "string", description: "Working directory. Defaults to server cwd." },
+      command: {
+        type: "string",
+        description:
+          "Shell command to run. Single line only — no newlines or command chaining via control characters.",
+      },
+      cwd: {
+        type: "string",
+        description: "Working directory. Defaults to server cwd.",
+      },
       timeoutMs: {
         type: "number",
         description: "Timeout in milliseconds. Defaults to 30000, max 120000.",
@@ -41,6 +56,18 @@ export const bashTool: ToolDefinition<BashInput, BashOutput> = {
       throw new Error("command is required.");
     }
 
+    if (command.length > MAX_COMMAND_CHARS) {
+      throw new Error(
+        `Command exceeds maximum length of ${MAX_COMMAND_CHARS} characters (got ${command.length}).`,
+      );
+    }
+
+    for (const { pattern, reason } of REJECT_PATTERNS) {
+      if (pattern.test(command)) {
+        throw new Error(reason);
+      }
+    }
+
     const cwd = readString(input, "cwd") ?? process.cwd();
     const timeoutMs = readTimeout(input.timeoutMs);
 
@@ -54,7 +81,8 @@ function runShellCommand(
   timeoutMs: number,
 ): Promise<BashOutput> {
   return new Promise((resolve, reject) => {
-    const child = spawn("/bin/bash", ["-lc", command], {
+    // Use -c (not -lc) — no login shell, no profile sourcing
+    const child = spawn("/bin/bash", ["-c", command], {
       cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
