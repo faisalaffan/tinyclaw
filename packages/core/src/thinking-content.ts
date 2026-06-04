@@ -1,5 +1,32 @@
 import type { ChatMessage } from "./contract";
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function readTrimmedText(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const text = value.trim();
+  return text || undefined;
+}
+
+function extractThinkingBlockText(block: Record<string, unknown>): string | undefined {
+  return block.type === "thinking" ? readTrimmedText(block.thinking) : undefined;
+}
+
+function extractReasoningSummaryTexts(block: Record<string, unknown>): string[] {
+  if (block.type !== "reasoning" || !Array.isArray(block.summary)) {
+    return [];
+  }
+
+  return block.summary
+    .map((entry) => asRecord(entry))
+    .flatMap((entry) => (entry ? [readTrimmedText(entry.text)].filter(Boolean) : []));
+}
+
 export function extractThinkingFromAssistantMessage(
   message: Extract<ChatMessage, { role: "assistant" }>,
 ): string | undefined {
@@ -22,42 +49,20 @@ export function extractThinkingFromProviderContent(
   const parts: string[] = [];
 
   for (const item of content) {
-    if (typeof item !== "object" || item === null) {
+    const block = asRecord(item);
+
+    if (!block) {
       continue;
     }
 
-    const block = item as Record<string, unknown>;
+    const thinkingText = extractThinkingBlockText(block);
 
-    if (block.type === "thinking" && typeof block.thinking === "string") {
-      const text = block.thinking.trim();
-
-      if (text) {
-        parts.push(text);
-      }
-
+    if (thinkingText) {
+      parts.push(thinkingText);
       continue;
     }
 
-    if (block.type === "reasoning") {
-      const summary = block.summary;
-
-      if (Array.isArray(summary)) {
-        for (const entry of summary) {
-          if (
-            typeof entry === "object" &&
-            entry !== null &&
-            "text" in entry &&
-            typeof (entry as { text?: unknown }).text === "string"
-          ) {
-            const text = (entry as { text: string }).text.trim();
-
-            if (text) {
-              parts.push(text);
-            }
-          }
-        }
-      }
-    }
+    parts.push(...extractReasoningSummaryTexts(block));
   }
 
   const combined = parts.join("\n\n").trim();
